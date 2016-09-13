@@ -9,14 +9,20 @@ namespace ImportParser.Model
 {
     public class Machine
     {
-        private Regex regex = new Regex("@import\\s+(url\\(('|\")(?<name1>.+?)('|\")\\)|('|\")(?<name2>.+?)('|\"))", RegexOptions.Compiled);
+        private Dictionary<string, string> _lessVariables;
+        private Regex regexImport = new Regex("^@import\\s+(url\\(('|\")(?<name1>.+?)('|\")\\)|('|\")(?<name2>.+?)('|\"))", RegexOptions.Compiled|RegexOptions.Multiline|RegexOptions.IgnoreCase);
+        private Regex regexLessVariable = new Regex("^@(?<key>.+?)\\s*:\\s*\"(?<value>.+?)\";", RegexOptions.Compiled | RegexOptions.Multiline | RegexOptions.IgnoreCase);
+
         private Module _root;
+
         public Machine(string fileName)
         {
+            _lessVariables = new Dictionary<string, string>();
             _root = new Module(fileName);
             Task t = StartProcessing();
             t.Wait();
         }
+
         private async Task<Module> StartProcessing()
         {
             await ProcessModule(_root);
@@ -30,20 +36,50 @@ namespace ImportParser.Model
                 using (StreamReader sr = File.OpenText(module.FilePath))
                 {
                     string fileContent = await sr.ReadToEndAsync();
+                    ProcessLessVariables(fileContent);
 
-                    foreach (Match match in regex.Matches(fileContent))
-                    {
-                        string importPath = match.Groups["name1"].Success ? match.Groups["name1"].Value : match.Groups["name2"].Value;
-                        string filePath = Path.Combine(Path.GetDirectoryName(module.FilePath), importPath);
-                        Module child = new Module(Path.GetFullPath(filePath));
-                        module.Children.Add(child);
-                        await ProcessModule(child);
-                    }
+                    await ProcessImports(module, fileContent);
                 }
             }
-            catch (Exception ex)
-            {
+            catch (Exception ex) { }
+        }
 
+        private async Task ProcessImports(Module module, string fileContent)
+        {
+            foreach (Match match in regexImport.Matches(fileContent))
+            {
+                string importPath = match.Groups["name1"].Success ? match.Groups["name1"].Value : match.Groups["name2"].Value;
+                string normalizedImportPath = NormalizeImportPath(importPath);
+                string filePath = Path.Combine(Path.GetDirectoryName(module.FilePath), normalizedImportPath);
+                
+                Module child = new Module(Path.GetFullPath(filePath));
+                module.Children.Add(child);
+                await ProcessModule(child);
+            }
+        }
+
+        private string NormalizeImportPath(string importPath)
+        {
+            foreach(var variable in _lessVariables)
+            {
+                if (importPath.Contains(variable.Key))
+                {
+                    importPath = importPath.Replace(variable.Key, variable.Value);
+                }
+            }
+            return importPath;
+        }
+
+        private void ProcessLessVariables(string fileContent)
+        {
+            foreach (Match match in regexLessVariable.Matches(fileContent))
+            {
+                string key = match.Groups["key"].Value;
+                if (key != "import")
+                {
+                    string value = match.Groups["value"].Value;
+                    _lessVariables["@{" + key + "}"] = value;
+                }
             }
         }
 
@@ -54,10 +90,9 @@ namespace ImportParser.Model
             {
                 ProcessModule(m, level + 1, action);
             }
-
         }
 
-        public void Process(Action<string, string,string, int> action)
+        public void Process(Action<string, string, string, int> action)
         {
             ProcessModule(_root, 0, action);
         }
